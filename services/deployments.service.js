@@ -1,7 +1,4 @@
-"use strict";
-
 const DbService = require("db-mixin");
-const Cron = require("cron-mixin");
 const Membership = require("membership-mixin");
 const ConfigLoader = require("config-mixin");
 const { MoleculerClientError } = require("moleculer").Errors;
@@ -49,110 +46,63 @@ module.exports = {
 
         fields: {
 
-            // name of deployment
+            // package name
             name: {
                 type: "string",
-                required: true,
-                unique: true,
                 min: 3,
                 max: 255,
+                required: true,
             },
 
-            // namespace of deployment
+            // package namespace
             namespace: {
                 type: "string",
-                required: true,
                 min: 3,
                 max: 255,
+                required: true,
             },
 
-            // version of deployment
+            // package version
             version: {
                 type: "string",
-                required: true,
                 min: 3,
                 max: 255,
-            },
-
-            // url of deployment
-            url: {
-                type: "string",
                 required: true,
-                min: 3,
-                max: 255,
             },
 
-            // branch of deployment
-            branch: {
-                type: "string",
-                required: true,
-                min: 3,
-                max: 255,
-            },
-
-            // repository of deployment
-            repository: {
-                type: "string",
-                required: true,
-                min: 3,
-                max: 255,
-            },
-
-            // registry of deployment
-            registry: {
-                type: "string",
-                required: true,
-                min: 3,
-                max: 255,
-            },
-
-            // cluster name
             cluster: {
                 type: "string",
+                min: 3,
+                max: 255,
                 required: false,
-                default: "default"
+                default: "default",
             },
 
-            // status of deployment
-            status: {
-                type: "string",
-                required: false,
-                enum: ["active", "inactive"],
-            },
-
-            // dirty patch
-            patch: {
-                type: "boolean",
-                required: false,
-                default: false,
-            },
-
-            // deployment image
-            image: {
-                type: "string",
-                required: false,
-                populate: {
-                    action: "v1.k8s.images.get",
+            // git remote repository
+            remote: {
+                type: "object",
+                props: {
+                    name: {
+                        type: "string",
+                        min: 3,
+                        max: 255,
+                        required: true,
+                    },
+                    namespace: {
+                        type: "string",
+                        min: 3,
+                        max: 255,
+                        required: true,
+                    },
+                    branch: {
+                        type: "string",
+                        min: 3,
+                        max: 255,
+                        required: true,
+                    },
                 },
             },
 
-            // image template
-            template: {
-                type: "string",
-                required: false,
-                populate: {
-                    action: "v1.k8s.images.get",
-                },
-            },
-
-            // k8s.deployments id
-            deployment: {
-                type: "string",
-                required: false,
-                populate: {
-                    action: "v1.k8s.deployments.get",
-                },
-            },
 
 
 
@@ -199,19 +149,24 @@ module.exports = {
                 branch: { type: "string", min: 3, max: 255 },
             },
             async handler(ctx) {
+                const params = Object.assign({}, ctx.params)
                 // get the package
-                const package = await this.findEntity(null, {
+                const package = await this.findEntity(ctx, {
                     query: {
-                        name: ctx.params.name,
-                        namespace: ctx.params.namespace,
-                        branch: ctx.params.branch,
+                        remote: {
+                            name: params.name,
+                            namespace: params.namespace,
+                            branch: params.branch,
+                        }
                     },
-                    scope: '-memebership'
+                    // scope: '-memebership'
                 });
+
 
                 // if package does not exist
                 if (!package) {
-                    throw new MoleculerClientError("Package not found", 404);
+                    return package;
+                    // throw new MoleculerClientError("Package not found", 404);
                 }
 
                 // return the package

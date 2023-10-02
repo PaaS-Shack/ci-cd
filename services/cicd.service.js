@@ -1,4 +1,4 @@
-"use strict";
+
 const ConfigLoader = require("config-mixin");
 const { MoleculerClientError } = require("moleculer").Errors;
 
@@ -29,7 +29,7 @@ module.exports = {
         rest: "v1/cicd",
 
         config: {
-            'cicd.enabled': false
+            'cicd.enabled': false,
         }
     },
 
@@ -38,7 +38,90 @@ module.exports = {
      */
 
     actions: {
+        /**
+         * process package publish event
+         * 
+         * @actions
+         * @param {String} name - name of package
+         * @param {String} namespace - namespace of package
+         * @param {String} version - version of package
+         * @param {String} url - url of package
+         * @param {String} branch - branch of package
+         * @param {String} repository - repository of package
+         * @param {String} registry - registry of package
+         * 
+         * @returns {Object} - package
+         */
+        publish: {
+            rest: {
+                method: "POST",
+                path: "/publish"
+            },
+            permissions: ['cicd.publish'],
+            params: {
+                name: {
+                    type: "string",
+                    min: 3,
+                    max: 255,
+                },
+                namespace: {
+                    type: "string",
+                    min: 3,
+                    max: 255,
+                },
+                version: {
+                    type: "string",
+                    min: 3,
+                    max: 255,
+                },
+                branch: {
+                    type: "string",
+                    min: 3,
+                    max: 255,
+                },
+                url: {
+                    type: "string",
+                    min: 3,
+                    max: 255,
+                    optional: true,
+                },
+                repository: {
+                    type: "string",
+                    min: 3,
+                    max: 255,
+                    optional: true,
+                },
+                registry: {
+                    type: "string",
+                    min: 3,
+                    max: 255,
+                    optional: true,
+                },
+            },
+            async handler(ctx) {
+                const params = Object.assign({}, ctx.params);
 
+                // if registry is not set
+                if (!params.registry) {
+                    // set registry to docker hub
+                    params.registry = "docker.io";
+                }
+
+                // if repository is not set
+                if (!params.repository) {
+                    // set repository to namespace/name
+                    params.repository = `${params.namespace}/${params.name}`;
+                }
+
+                // if url is not set
+                if (!params.url) {
+                    // set url to registry/repository:branch
+                    params.url = `${params.registry}/${params.repository}:${params.branch}`;
+                }
+
+                return this.processGithubPublish(ctx, params);
+            }
+        },
 
     },
 
@@ -48,25 +131,31 @@ module.exports = {
     events: {
         /**
          * github.package.published
-         * { 
-         * name: 'github', 
-         * namespace: 'paas-shack', 
-         * version: 'sha256:6ab71b283cfa70526505c153c6cb1d6a74747b52a3665828babb1fa83120f33e', 
-         * url: 'ghcr.io/paas-shack/github:main', 
-         * branch: 'main', 
-         * repository: 'PaaS-Shack/github', 
-         * registry: 'ghcr.io' 
-         * }
+         * {
+                name: 'github',
+                namespace: 'paas-shack',
+                branch: 'main',
+                sha256: '33c412d60a4c70da20f50413c80b3d6c32cb83a1d33c3c236f1af9395fb47e00',
+                url: 'ghcr.io/paas-shack/github:sha256-c3438d76273dafc73df9cfc6a6def759c1f1dff95a3ea7ab51c973f28521c265.sig'
+            }
          */
         async "github.package.published"(ctx) {
-            const Package = ctx.params;
+            const package = ctx.params;
+
+            this.logger.info(`github.package.published`, package);
 
             if (!this.config['cicd.enabled']) {
                 this.logger.info("CICD is disabled");
                 return;
             }
 
-            await this.processGithubPublish(ctx, Package);
+            // match branch pachage
+            if (!package.url.includes(`:${package.branch}`)) {
+                this.logger.info(`branch does not match package url`);
+                return;
+            }
+
+            await this.processGithubPublish(ctx, package);
         },
     },
 
@@ -89,19 +178,15 @@ module.exports = {
                 branch: package.branch,
             });
 
+
             // if deployment exists
             if (deployment) {
-                if (deployment.patch) {
-                    if (!this.config['cicd.dirtyPatch']) {
-                        this.logger.info("Dirty patch has been deiabled");
-                        return;
-                    }
-                    // dirty patch deployment
-                    await this.patchDeploymentImage(ctx, package, deployment);
-                } else {
-                    // create new k8s image version based off deployment template
-                    await this.createImageVersion(ctx, package, deployment);
+                if (!this.config['cicd.dirtyPatch']) {
+                    this.logger.info("Dirty patch has been deiabled");
+                    return;
                 }
+                // dirty patch deployment
+                await this.patchDeploymentImage(ctx, package, deployment);
             } else {
                 // else log deployment does not exist
                 this.logger.info(`deployment does not exist`, package);
@@ -124,23 +209,41 @@ module.exports = {
                 cluster: deployment.cluster
             });
 
-            const patch = {
+            // if resource does not exist
+            if (!resource) {
+                this.logger.info(`deployment does not exist`, package);
+                return;
+            }
+
+            const image = this.getImageUrl(package);
+
+            const body = {
                 spec: {
                     template: {
                         spec: {
-                            containers: [{
-                                image: this.getImageUrl(package)
-                            }]
+                            containers: [resource.spec.template.spec.containers[0]]
                         }
                     }
                 }
             };
 
+            // check if image is already set
+            if (image === resource.spec.template.spec.containers[0].image) {
+                this.logger.info(`image is already set to ${image}`);
+                return;
+            }
+
+            // update image
+            body.spec.template.spec.containers[0].image = image;
+
+            this.logger.info(`patching deployment image to ${image}`, deployment);
+
+            // patch deployment
             return ctx.call('v1.kube.patchNamespacedDeployment', {
                 name: deployment.name,
                 namespace: deployment.namespace,
                 cluster: deployment.cluster,
-                body: patch
+                body: body
             });
         },
 
@@ -199,7 +302,8 @@ module.exports = {
          * @returns {String} - image url
          */
         getImageUrl(package) {
-            return `${package.registry}/${package.repository}@sha256:${package.version}`
+            //patch package.url to remove registry
+            return package.url.replace(`:${package.branch}`, `@sha256:${package.sha256}`);
         }
     },
 
